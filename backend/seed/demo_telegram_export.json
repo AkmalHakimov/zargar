@@ -1,0 +1,55 @@
+{
+  "name": "Ziyo Education Managers",
+  "id": "ziyo-demo-group",
+  "type": "private_group",
+  "messages": [
+    {
+      "id": 1,
+      "type": "message",
+      "date": "2026-05-20T09:00:00+00:00",
+      "from": "Founder",
+      "from_id": "user1",
+      "text": "Returning students get 10% discount this month. Madina should approve exceptions."
+    },
+    {
+      "id": 2,
+      "type": "message",
+      "date": "2026-05-21T10:30:00+00:00",
+      "from": "Madina",
+      "from_id": "user2",
+      "text": "Payment follow-up is delayed because confirmations are still checked manually."
+    },
+    {
+      "id": 3,
+      "type": "message",
+      "date": "2026-05-22T11:15:00+00:00",
+      "from": "Founder",
+      "from_id": "user1",
+      "text": "Decision: update returning students to 15% discount from Monday."
+    },
+    {
+      "id": 4,
+      "type": "message",
+      "date": "2026-05-22T13:00:00+00:00",
+      "from": "Support Lead",
+      "from_id": "user3",
+      "text": "Two customers complained about late reply after the price message yesterday."
+    },
+    {
+      "id": 5,
+      "type": "message",
+      "date": "2026-05-23T09:20:00+00:00",
+      "from": "Sales Manager",
+      "from_id": "user4",
+      "text": "Open task: call leads who did not respond after the price message by Friday."
+    },
+    {
+      "id": 6,
+      "type": "message",
+      "date": "2026-05-23T14:10:00+00:00",
+      "from": "Sales Manager",
+      "from_id": "user4",
+      "text": "Pattern this week: several leads dropped after receiving the price message."
+    }
+  ]
+}
