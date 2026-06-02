@@ -9,7 +9,15 @@ from app.llm.validation import LLMValidationError
 from app.memory.community_service import CommunityService
 from app.memory.entity_extractor import EntityExtractor
 from app.memory.entity_resolver import EntityResolver
-from app.memory.episode_service import build_context_window, mark_episode, should_process_episode
+from app.memory.episode_service import (
+    BUSINESS_RELEVANT,
+    NOISE,
+    PERSONAL_CHAT,
+    UNCLEAR_NEEDS_REVIEW,
+    build_context_window,
+    classify_episode_relevance,
+    mark_episode,
+)
 from app.memory.fact_extractor import FactExtractor
 from app.memory.fact_resolver import FactResolver
 from app.memory.temporal_resolver import TemporalResolver
@@ -17,8 +25,23 @@ from app.models import Episode
 
 
 async def process_episode(db: Session, episode: Episode) -> int:
-    if not should_process_episode(episode.content):
+    relevance = classify_episode_relevance(episode.content)
+    episode.raw_payload = {
+        **(episode.raw_payload or {}),
+        "relevance_classification": relevance["classification"],
+        "relevance_reason": relevance["reason"],
+    }
+    if relevance["classification"] == NOISE:
         mark_episode(db, episode, "skipped_noise")
+        return 0
+    if relevance["classification"] == PERSONAL_CHAT:
+        mark_episode(db, episode, "skipped_personal")
+        return 0
+    if relevance["classification"] == UNCLEAR_NEEDS_REVIEW:
+        mark_episode(db, episode, "unclear_needs_review")
+        return 0
+    if relevance["classification"] != BUSINESS_RELEVANT:
+        mark_episode(db, episode, "unclear_needs_review")
         return 0
     settings = get_settings()
     llm = build_llm_provider(settings)

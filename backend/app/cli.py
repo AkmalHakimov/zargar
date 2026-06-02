@@ -7,12 +7,15 @@ import typer
 from sqlalchemy import func, select
 
 from app.agents import BottleneckAgent, FounderReportAgent, MemoryQAAgent
+from app.bot.telegram_owner_bot import run_polling_bot
+from app.config import get_settings
 from app.db import Base, SessionLocal, engine
 from app.ingestion.telegram_export_parser import load_export, parse_messages
 from app.memory.context_retriever import ContextRetriever
+from app.memory.episode_service import BUSINESS_RELEVANT
 from app.memory.episode_service import create_telegram_export_source, import_telegram_messages
 from app.models import Company, Entity, Episode, EpisodeFact, Fact, Source
-from app.workers.process_backfill import backfill_plan, process_backfill as run_process_backfill
+from app.workers.process_backfill import backfill_plan, process_backfill as run_process_backfill, process_new_live
 
 app = typer.Typer(help="Zargar Labs local MVP CLI.")
 
@@ -101,6 +104,23 @@ def bottlenecks(company_id: UUID = typer.Option(...), period: str = typer.Option
         typer.echo(result["bottlenecks"])
 
 
+@app.command("bot")
+def bot(company_id: UUID | None = typer.Option(None, "--company-id", envvar="ZARGAR_COMPANY_ID")) -> None:
+    if company_id is None:
+        raise typer.BadParameter("Provide --company-id or set ZARGAR_COMPANY_ID.")
+    ensure_schema()
+    asyncio.run(run_polling_bot(company_id, get_settings(), SessionLocal))
+
+
+@app.command("process-new")
+def process_new(company_id: UUID = typer.Option(...), limit: int = typer.Option(50)) -> None:
+    ensure_schema()
+    with SessionLocal() as db:
+        processed, skipped = asyncio.run(process_new_live(db, company_id, limit=limit))
+        typer.echo(f"processed={processed}")
+        typer.echo(f"skipped={skipped}")
+
+
 @app.command("context-search")
 def context_search(company_id: UUID = typer.Option(...), query: str = typer.Option(...)) -> None:
     ensure_schema()
@@ -123,6 +143,9 @@ def stats(company_id: UUID = typer.Option(...)) -> None:
         active_facts = count_facts(db, company_id, "active")
         invalidated_facts = count_facts(db, company_id, "invalidated")
         needs_review = count_facts(db, company_id, "needs_review")
+        skipped_personal = count_episode_status(db, company_id, "skipped_personal")
+        business_relevant = count_relevance(db, company_id, BUSINESS_RELEVANT)
+        unclear_needs_review = count_episode_status(db, company_id, "unclear_needs_review")
         typer.echo(f"episodes={episode_count}")
         typer.echo(f"chats={chat_count}")
         typer.echo(f"date_range={date_range[0]} to {date_range[1]}")
@@ -134,6 +157,9 @@ def stats(company_id: UUID = typer.Option(...)) -> None:
         typer.echo(f"active_facts={active_facts}")
         typer.echo(f"invalidated_facts={invalidated_facts}")
         typer.echo(f"facts_needing_review={needs_review}")
+        typer.echo(f"skipped_personal={skipped_personal}")
+        typer.echo(f"business_relevant={business_relevant}")
+        typer.echo(f"unclear_needs_review={unclear_needs_review}")
 
 
 @app.command("facts")
@@ -217,6 +243,18 @@ def period_window(period: str) -> tuple[datetime, datetime]:
 
 def count_facts(db, company_id: UUID, status: str) -> int:
     return db.scalar(select(func.count()).select_from(Fact).where(Fact.company_id == company_id, Fact.status == status)) or 0
+
+
+def count_episode_status(db, company_id: UUID, status: str) -> int:
+    return db.scalar(select(func.count()).select_from(Episode).where(Episode.company_id == company_id, Episode.processed_status == status)) or 0
+
+
+def count_relevance(db, company_id: UUID, classification: str) -> int:
+    return sum(
+        1
+        for episode in db.scalars(select(Episode).where(Episode.company_id == company_id))
+        if (episode.raw_payload or {}).get("relevance_classification") == classification
+    )
 
 
 def top_senders(db, company_id: UUID) -> list[tuple[str | None, int]]:

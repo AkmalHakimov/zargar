@@ -62,6 +62,69 @@ USE_MOCK_LLM=true zargar bottlenecks --company-id <id> --period week
 
 Expected Memory QA output includes the active `15%` returning-student discount, its `valid_at` date, Telegram source evidence, and a note that the older `10%` policy is outdated.
 
+## Running Telegram Owner Bot
+
+The Telegram bot is for the owner or manager only. It does not auto-reply to customers.
+
+Create a bot with BotFather:
+
+1. Open Telegram and message `@BotFather`.
+2. Run `/newbot`.
+3. Follow the prompts and copy the bot token.
+
+Set the token in your shell or in `backend/.env`:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:your-bot-token"
+```
+
+Find your Telegram user ID by messaging `@userinfobot` or another trusted ID lookup bot, then allow only owner/manager IDs:
+
+```bash
+export TELEGRAM_ALLOWED_USER_IDS="123456789,987654321"
+```
+
+To let the bot observe a business group, add the bot to the group and allow that chat ID:
+
+```bash
+export TELEGRAM_ALLOWED_CHAT_IDS="-1001234567890"
+```
+
+Only chats listed in `TELEGRAM_ALLOWED_CHAT_IDS` are ingested. Other group messages are ignored. The bot saves group messages as pending episodes and does not auto-reply in the group.
+
+Install the bot extra if needed:
+
+```bash
+cd backend
+source ../.venv/bin/activate
+pip install -e ".[bot]"
+```
+
+Run the owner bot against an imported and processed company memory:
+
+```bash
+zargar bot --company-id <id>
+```
+
+Then message your bot in Telegram:
+
+```text
+/ask What are our current policies?
+/decisions_week
+/complaints_week
+/tasks_open
+/status
+```
+
+Responses include concise sections for the answer, current facts, historical/outdated facts, and Telegram source evidence when available.
+
+After group messages are ingested, check counts and process new live episodes manually:
+
+```bash
+zargar stats --company-id <id>
+zargar process-new --company-id <id> --limit 20
+```
+
 ## Test With Your Own Telegram Export
 
 1. In Telegram Desktop, open the group you have permission to analyze.

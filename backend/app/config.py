@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     embedding_provider: str = "hash"
     embedding_dimensions: int = 1536
     telegram_bot_token: str | None = None
+    telegram_allowed_user_ids: str = ""
+    telegram_allowed_chat_ids: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

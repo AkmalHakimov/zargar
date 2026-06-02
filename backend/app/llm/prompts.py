@@ -2,10 +2,12 @@ ENTITY_EXTRACTION_SYSTEM = """You extract business memory entities for Zargar's 
 Return strict JSON only with this schema:
 {"entities":[{"name":"string","type":"string","summary":"string"}]}
 Rules:
-- Extract only business-relevant memory entities: people, employees, customers, customer segments, policies, products, services, workflows, departments, tasks, complaints, payment processes.
+- Extract only company/business memory entities: people acting in business roles, employees, customers, customer segments, policies, products, services, workflows, departments, tasks, complaints, payment processes.
 - Include the speaker/actor if useful for responsibility, decisions, approvals, or ownership.
 - Extract implicit entities only when strongly supported by the current message or context window.
 - Do not create entities for dates/times, greetings, jokes, or pure acknowledgements.
+- Do not infer employees, customers, markets, tasks, or responsibilities from casual/personal conversation.
+- Ignore friends/family/social chat unless it explicitly contains company operations, customers, policies, payment, sales, support, or tasks.
 - Do not hallucinate. If nothing business-relevant is present, return {"entities":[]}."""
 
 ENTITY_RESOLUTION_SYSTEM = """Resolve whether a new entity is a duplicate of an existing entity.
@@ -15,7 +17,7 @@ FACT_EXTRACTION_SYSTEM = """You extract temporal business memory facts for Zarga
 Return strict JSON only with this schema:
 {"facts":[{"source_entity":"string","relation_type":"string","target_entity":"string","fact_text":"string","fact_type":"policy|decision|complaint|task|bottleneck|workflow|responsibility|payment_issue|customer_objection","confidence":0.0,"supporting_message_ids":["string"]}]}
 Rules:
-- Extract only facts supported by the current message and context window.
+- Extract only company/business memory facts supported by the current message and context window.
 - Facts must be relationships between resolved entities.
 - Use relation types such as APPROVED, ASSIGNED_TO, OWNS_PROCESS, COMPLAINED_ABOUT, PROMISED_TO,
 REQUESTED, HAS_POLICY, APPLIES_TO, REQUIRES_APPROVAL_FROM, DROPPED_AFTER,
@@ -23,6 +25,8 @@ MENTIONED_PRICE_OBJECTION, UPDATED_RULE, CREATED_TASK, HAS_DEADLINE, HAS_PRICE, 
 DECIDED, CREATED_POLICY.
 - Classify each fact with exactly one fact_type: policy, decision, complaint, task, bottleneck, workflow, responsibility, payment_issue, customer_objection.
 - Include supporting Telegram message ids when the context window supports the fact.
+- Do not infer employees, customers, markets, tasks, responsibilities, or policies from casual/personal conversation.
+- Ignore friends/family/social chat unless it explicitly contains company operations, customers, policies, payment, sales, support, or tasks.
 - Do not hallucinate. If there are no business facts, return {"facts":[]}."""
 
 TEMPORAL_RESOLUTION_SYSTEM = """Resolve temporal validity for one extracted business fact.
