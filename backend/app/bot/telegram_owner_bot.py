@@ -1,4 +1,5 @@
 import logging
+import shlex
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -6,10 +7,11 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.agents import BottleneckAgent, FounderReportAgent, MemoryQAAgent
+from app.agents import BottleneckAgent, DeveloperAgent, FounderReportAgent, MemoryQAAgent
+from app.agents.developer_agent import DeveloperAgentInput
 from app.config import Settings
 from app.memory.episode_service import BUSINESS_RELEVANT, import_live_telegram_message
-from app.models import Episode, Fact
+from app.models import DeveloperTask, Episode, Fact
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,22 @@ HELP_TEXT = """Zargar company brain commands:
 /tasks_open
 /policies
 /bottlenecks_week
-/status"""
+/status
+/dev_help
+/dev_task <owner/repo> <task>
+/dev_status <task_id>
+/dev_cancel <task_id>"""
+
+DEV_HELP_TEXT = """Senior developer agent commands:
+/dev_task <owner/repo> <task>
+/dev_status <task_id>
+/dev_cancel <task_id>
+
+Safety:
+- creates zargar/* branches only
+- opens draft PRs only
+- never merges or deploys
+- refuses ambiguous, unsafe, or oversized tasks"""
 
 
 class TelegramOwnerBot:
@@ -49,6 +66,7 @@ class TelegramOwnerBot:
         qa_agent: MemoryQAAgent | None = None,
         report_agent: FounderReportAgent | None = None,
         bottleneck_agent: BottleneckAgent | None = None,
+        developer_agent: DeveloperAgent | None = None,
     ) -> None:
         self.company_id = company_id
         self.db_session_factory = db_session_factory
@@ -57,11 +75,18 @@ class TelegramOwnerBot:
         self.qa_agent = qa_agent or MemoryQAAgent()
         self.report_agent = report_agent or FounderReportAgent()
         self.bottleneck_agent = bottleneck_agent or BottleneckAgent()
+        self.developer_agent = developer_agent or DeveloperAgent(allowed_requester_ids=allowed_user_ids)
 
     def is_authorized(self, user_id: int | None) -> bool:
         return user_id is not None and user_id in self.allowed_user_ids
 
-    async def handle_message(self, user_id: int | None, text: str | None) -> list[str]:
+    async def handle_message(
+        self,
+        user_id: int | None,
+        text: str | None,
+        chat_id: str | None = None,
+        message_id: str | None = None,
+    ) -> list[str]:
         if not self.is_authorized(user_id):
             return [UNAUTHORIZED_MESSAGE]
 
@@ -85,6 +110,14 @@ class TelegramOwnerBot:
                 return await self._run_bottlenecks()
             if command == "/status":
                 return self._status()
+            if command == "/dev_help":
+                return split_telegram_message(DEV_HELP_TEXT)
+            if command == "/dev_task":
+                return await self._run_dev_task(user_id, argument, chat_id, message_id)
+            if command == "/dev_status":
+                return self._dev_status(argument)
+            if command == "/dev_cancel":
+                return self._dev_cancel(argument)
             return split_telegram_message("Unknown command.\n\n" + HELP_TEXT)
         except Exception:
             logger.exception("Telegram owner bot command failed: %s", command)
@@ -172,6 +205,54 @@ class TelegramOwnerBot:
             )
         ]
 
+    async def _run_dev_task(
+        self,
+        user_id: int | None,
+        argument: str,
+        chat_id: str | None,
+        message_id: str | None,
+    ) -> list[str]:
+        parsed = parse_dev_task_argument(argument)
+        if not parsed:
+            return ["Usage: /dev_task <owner/repo> <task>"]
+        repo, task_text = parsed
+        request = DeveloperAgentInput(
+            company_id=self.company_id,
+            repo=repo,
+            task_text=task_text,
+            requester_id=str(user_id),
+            telegram_chat_id=chat_id,
+            telegram_message_id=message_id,
+        )
+        with self.db_session_factory() as db:
+            result = await self.developer_agent.run(db, request)
+        return split_telegram_message(result["message"])
+
+    def _dev_status(self, argument: str) -> list[str]:
+        task_id = argument.strip()
+        if not task_id:
+            return ["Usage: /dev_status <task_id>"]
+        with self.db_session_factory() as db:
+            task = db.get(DeveloperTask, parse_uuid_or_none(task_id))
+            if not task:
+                return ["Developer task not found."]
+            return [format_developer_task_status(task)]
+
+    def _dev_cancel(self, argument: str) -> list[str]:
+        task_id = argument.strip()
+        if not task_id:
+            return ["Usage: /dev_cancel <task_id>"]
+        with self.db_session_factory() as db:
+            task = db.get(DeveloperTask, parse_uuid_or_none(task_id))
+            if not task:
+                return ["Developer task not found."]
+            if task.status == "pr_created":
+                return ["Cannot cancel a task after a PR has been created. Close the PR in GitHub if needed."]
+            task.status = "cancelled"
+            task.summary = "Cancelled by authorized Telegram owner."
+            db.commit()
+            return [format_developer_task_status(task)]
+
 
 def parse_allowed_user_ids(raw: str | None) -> set[int]:
     allowed: set[int] = set()
@@ -194,6 +275,41 @@ def parse_command(text: str) -> tuple[str, str]:
     first, _, rest = stripped.partition(" ")
     command = first.split("@", 1)[0].lower()
     return command, rest.strip()
+
+
+def parse_dev_task_argument(argument: str) -> tuple[str, str] | None:
+    try:
+        parts = shlex.split(argument)
+    except ValueError:
+        return None
+    if len(parts) < 2:
+        return None
+    repo = parts[0]
+    task_text = " ".join(parts[1:]).strip()
+    if "/" not in repo or not task_text:
+        return None
+    return repo, task_text
+
+
+def parse_uuid_or_none(value: str) -> UUID | None:
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
+def format_developer_task_status(task: DeveloperTask) -> str:
+    return "\n".join(
+        [
+            f"Task: {task.id}",
+            f"Repository: {task.repo}",
+            f"Branch: {task.branch or ''}",
+            f"Status: {task.status}",
+            f"PR URL: {task.pr_url or ''}",
+            f"Summary: {task.summary or ''}",
+            f"Error: {task.error or ''}",
+        ]
+    )
 
 
 def has_company_memory(db: Session, company_id: UUID) -> bool:
@@ -303,7 +419,7 @@ async def run_polling_bot(company_id: UUID, settings: Settings, db_session_facto
             owner_bot.handle_group_message(aiogram_message_to_live_payload(message))
             return
         user_id = message.from_user.id if message.from_user else None
-        responses = await owner_bot.handle_message(user_id, message.text)
+        responses = await owner_bot.handle_message(user_id, message.text, chat_id=str(message.chat.id), message_id=str(message.message_id))
         for response in responses:
             await message.answer(response[:TELEGRAM_MESSAGE_LIMIT])
 

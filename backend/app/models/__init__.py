@@ -4,6 +4,7 @@ from app.models.db_models import (
     Community,
     CommunityEntity,
     Company,
+    DeveloperTask,
     Entity,
     Episode,
     EpisodeEntity,
@@ -18,6 +19,7 @@ __all__ = [
     "Community",
     "CommunityEntity",
     "Company",
+    "DeveloperTask",
     "Entity",
     "Episode",
     "EpisodeEntity",
@@ -25,4 +27,3 @@ __all__ = [
     "Fact",
     "Source",
 ]
-

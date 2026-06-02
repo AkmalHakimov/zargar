@@ -6,7 +6,8 @@ from uuid import UUID
 import typer
 from sqlalchemy import func, select
 
-from app.agents import BottleneckAgent, FounderReportAgent, MemoryQAAgent
+from app.agents import BottleneckAgent, DeveloperAgent, FounderReportAgent, MemoryQAAgent
+from app.agents.developer_agent import DeveloperAgentInput
 from app.bot.telegram_owner_bot import run_polling_bot
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine
@@ -14,7 +15,7 @@ from app.ingestion.telegram_export_parser import load_export, parse_messages
 from app.memory.context_retriever import ContextRetriever
 from app.memory.episode_service import BUSINESS_RELEVANT
 from app.memory.episode_service import create_telegram_export_source, import_telegram_messages
-from app.models import Company, Entity, Episode, EpisodeFact, Fact, Source
+from app.models import Company, DeveloperTask, Entity, Episode, EpisodeFact, Fact, Source
 from app.workers.process_backfill import backfill_plan, process_backfill as run_process_backfill, process_new_live
 
 app = typer.Typer(help="Zargar Labs local MVP CLI.")
@@ -119,6 +120,27 @@ def process_new(company_id: UUID = typer.Option(...), limit: int = typer.Option(
         processed, skipped = asyncio.run(process_new_live(db, company_id, limit=limit))
         typer.echo(f"processed={processed}")
         typer.echo(f"skipped={skipped}")
+
+
+@app.command("dev-task")
+def dev_task(company_id: UUID = typer.Option(...), repo: str = typer.Option(...), task: str = typer.Option(...)) -> None:
+    ensure_schema()
+    request = DeveloperAgentInput(company_id=company_id, repo=repo, task_text=task, requester_id="cli")
+    with SessionLocal() as db:
+        result = asyncio.run(DeveloperAgent().run(db, request))
+        typer.echo(result["message"])
+        typer.echo(f"task_id={result.get('task_id', '')}")
+
+
+@app.command("dev-status")
+def dev_status(task_id: UUID = typer.Option(...)) -> None:
+    ensure_schema()
+    with SessionLocal() as db:
+        task = db.get(DeveloperTask, task_id)
+        if not task:
+            typer.echo("Developer task not found.")
+            raise typer.Exit(code=1)
+        typer.echo(format_developer_task_status(task))
 
 
 @app.command("context-search")
@@ -276,6 +298,20 @@ def format_fact_line(fact: Fact, episode: Episode | None) -> str:
     return (
         f"{fact.status} | {fact.relation_type} | {fact.fact_text} | "
         f"valid_at={fact.valid_at} | invalid_at={fact.invalid_at} | {source}"
+    )
+
+
+def format_developer_task_status(task: DeveloperTask) -> str:
+    return "\n".join(
+        [
+            f"task_id={task.id}",
+            f"repo={task.repo}",
+            f"branch={task.branch or ''}",
+            f"status={task.status}",
+            f"pr_url={task.pr_url or ''}",
+            f"summary={task.summary or ''}",
+            f"error={task.error or ''}",
+        ]
     )
 
 

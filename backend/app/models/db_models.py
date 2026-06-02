@@ -153,3 +153,23 @@ class AgentRun(Base):
     output: Mapped[dict] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeveloperTask(Base):
+    __tablename__ = "developer_tasks"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    repo: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    branch: Mapped[str | None] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(64), default="pending", index=True)
+    task_text: Mapped[str] = mapped_column(Text, nullable=False)
+    requester_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(255))
+    telegram_message_id: Mapped[str | None] = mapped_column(String(255))
+    pr_url: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    audit_log: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

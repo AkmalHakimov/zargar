@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_allowed_user_ids: str = ""
     telegram_allowed_chat_ids: str = ""
+    github_token: str | None = None
+    github_allowed_repos: str = ""
+    max_files_changed: int = 5
+    max_lines_changed: int = 300
+    max_new_files: int = 3
+    branch_retention_days: int = 7
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

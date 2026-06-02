@@ -125,6 +125,57 @@ zargar stats --company-id <id>
 zargar process-new --company-id <id> --limit 20
 ```
 
+## Senior Developer Agent MVP
+
+The senior developer agent accepts coding tasks from Telegram or CLI and creates reviewable GitHub draft pull requests. It does not merge, approve, deploy, bypass protections, modify secrets, or push to protected/default branches.
+
+Configure GitHub access:
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+export GITHUB_ALLOWED_REPOS="owner/repo,owner2/repo2"
+```
+
+Safety model:
+
+- Repositories must be listed in `GITHUB_ALLOWED_REPOS`.
+- Every task uses one `zargar/*` branch.
+- Draft PRs are created by default.
+- No merge, deploy, force push, self-approval, branch-protection bypass, secret edits, or repository administration is supported.
+- Forbidden paths include `.env`, `.env.*`, `secrets.*`, `credentials*`, `*private_key*`, `*secret_key*`, `*.pem`.
+- CI/CD, infrastructure, deployment, and Terraform paths are blocked by default.
+- MVP change limits default to `MAX_FILES_CHANGED=5`, `MAX_LINES_CHANGED=300`, `MAX_NEW_FILES=3`.
+
+Branch lifecycle:
+
+- Branch format: `zargar/<task-slug>-<short-id>`.
+- One task maps to one branch and one PR lifecycle.
+- Re-running the same active task reuses the same branch.
+- Stale `zargar/*` branches can be cleaned after the retention period, default `BRANCH_RETENTION_DAYS=7`.
+- Non-`zargar/*` branches are never deleted by cleanup policy.
+
+Telegram commands:
+
+```text
+/dev_help
+/dev_task owner/repo "Add README setup section"
+/dev_status <task_id>
+/dev_cancel <task_id>
+```
+
+CLI commands:
+
+```bash
+zargar dev-task --company-id <id> --repo owner/repo --task "Add README setup section"
+zargar dev-status --task-id <task_id>
+```
+
+Limitations:
+
+- The MVP creates a safe draft PR with an auditable developer task file and implementation plan.
+- Ambiguous tasks such as `Improve auth` or `Refactor backend` are rejected with clarification questions.
+- Human review remains required for every PR.
+
 ## Test With Your Own Telegram Export
 
 1. In Telegram Desktop, open the group you have permission to analyze.
