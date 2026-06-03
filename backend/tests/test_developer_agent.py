@@ -144,7 +144,14 @@ def test_branch_reuse_for_same_task():
 
 
 def test_change_size_limits_are_enforced():
-    service = GitHubService(Settings(github_allowed_repos="akmal/zargar", max_files_changed=1, max_new_files=1, max_lines_changed=3))
+    service = GitHubService(
+        Settings(
+            github_allowed_repos="akmal/zargar",
+            github_max_files_changed=1,
+            github_max_new_files=1,
+            github_max_lines_changed=3,
+        )
+    )
 
     with pytest.raises(GitHubSafetyError):
         asyncio.run(

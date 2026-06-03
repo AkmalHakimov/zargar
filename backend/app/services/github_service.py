@@ -12,11 +12,20 @@ PROTECTED_BRANCHES = {"main", "master", "develop", "production"}
 FORBIDDEN_PATH_PATTERNS = [
     ".env",
     ".env.*",
+    ".envrc",
     "secrets.*",
     "credentials*",
+    "*.key",
     "*private_key*",
     "*secret_key*",
     "*.pem",
+    "*.p12",
+    "*.pfx",
+    "id_rsa",
+    "id_ed25519",
+    "*/secrets/*",
+    "*/.aws/*",
+    "*/.ssh/*",
 ]
 FORBIDDEN_DIR_PREFIXES = [".github/workflows/", "terraform/", "infra/", "deployment/"]
 
@@ -86,9 +95,9 @@ class GitHubService:
         validate_zargar_branch(branch)
         validate_change_limits(
             changes,
-            max_files=self.settings.max_files_changed,
-            max_lines=self.settings.max_lines_changed,
-            max_new_files=self.settings.max_new_files,
+            max_files=self.settings.github_max_files_changed,
+            max_lines=self.settings.github_max_lines_changed,
+            max_new_files=self.settings.github_max_new_files,
         )
         results = []
         for change in changes:
@@ -105,6 +114,8 @@ class GitHubService:
 
     async def create_draft_pr(self, repo: str, branch: str, title: str, body: str, base_branch: str | None = None) -> dict:
         self.verify_repository_allowed(repo)
+        if not self.settings.github_draft_prs_only:
+            raise GitHubSafetyError("Only draft PRs are supported by the developer agent MVP.")
         validate_zargar_branch(branch)
         base = base_branch or await self.get_default_branch(repo)
         validate_not_protected_branch(branch, base)
@@ -196,13 +207,13 @@ def validate_safe_path(path: str, ci_cd_allowed: bool = False) -> None:
 
 def validate_change_limits(changes: list[FileChange], max_files: int, max_lines: int, max_new_files: int) -> None:
     if len(changes) > max_files:
-        raise GitHubSafetyError("Task exceeds MVP safety limits.")
+        raise GitHubSafetyError(f"Changed file count exceeds limit: {len(changes)} / {max_files}. Draft PR blocked.")
     new_files = sum(1 for change in changes if change.operation == "upsert")
     if new_files > max_new_files:
-        raise GitHubSafetyError("Task exceeds MVP safety limits.")
+        raise GitHubSafetyError(f"New file count exceeds limit: {new_files} / {max_new_files}. Draft PR blocked.")
     lines = sum(len(change.content.splitlines()) for change in changes)
     if lines > max_lines:
-        raise GitHubSafetyError("Task exceeds MVP safety limits.")
+        raise GitHubSafetyError(f"Changed line count exceeds limit: {lines} / {max_lines}. Draft PR blocked.")
 
 
 def encode_content(content: str) -> str:

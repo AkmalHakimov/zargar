@@ -9,8 +9,12 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.models import DeveloperTask
 from app.services.github_service import FileChange, GitHubSafetyError, GitHubService
+from app.services.coding_executor import CodingExecutor, CodingExecutorError
+from app.services.local_workspace import ChangedFile, LocalWorkspaceService
+from app.services.developer_validation import DeveloperValidationResult, validate_developer_diff, validation_markdown
+from app.services.test_runner import TestRunner, TestRunSummary
 
-ACTIVE_TASK_STATUSES = {"pending", "planning", "coding", "pr_created", "needs_clarification"}
+ACTIVE_TASK_STATUSES = {"pending", "planning", "coding", "tests_running", "tests_failed", "pr_created", "needs_clarification"}
 PROTECTED_BRANCH_NAMES = {"main", "master", "develop", "production"}
 
 
@@ -22,6 +26,8 @@ class DeveloperAgentInput:
     requester_id: str
     telegram_chat_id: str | None = None
     telegram_message_id: str | None = None
+    execute_local: bool = False
+    engine: str | None = None
 
 
 class DeveloperAgent:
@@ -30,10 +36,16 @@ class DeveloperAgent:
         github: GitHubService | None = None,
         settings: Settings | None = None,
         allowed_requester_ids: set[int] | None = None,
+        workspace: LocalWorkspaceService | None = None,
+        coding_executor: CodingExecutor | None = None,
+        test_runner: TestRunner | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.github = github or GitHubService(self.settings)
         self.allowed_requester_ids = allowed_requester_ids
+        self.workspace = workspace or LocalWorkspaceService(self.settings)
+        self.coding_executor = coding_executor or CodingExecutor(self.settings)
+        self.test_runner = test_runner or TestRunner()
 
     async def run(self, db: Session, request: DeveloperAgentInput) -> dict:
         if not self.is_authorized(request.requester_id):
@@ -45,6 +57,13 @@ class DeveloperAgent:
             task = self.create_task(db, request, status="failed", error=str(exc))
             db.commit()
             return {"status": "failed", "task_id": str(task.id), "message": str(exc)}
+
+        dangerous_intent = detect_dangerous_developer_intent(request.task_text)
+        if dangerous_intent:
+            task = self.create_task(db, request, status="failed", error=dangerous_intent)
+            append_audit(task, "blocked_dangerous_intent", {"reason": dangerous_intent})
+            db.commit()
+            return {"status": "failed", "task_id": str(task.id), "message": dangerous_intent}
 
         existing = find_active_task(db, request.company_id, request.repo, request.task_text, request.requester_id)
         if existing and existing.branch:
@@ -68,6 +87,8 @@ class DeveloperAgent:
         branch = branch_name(request.task_text, str(task.id))
         task.branch = branch
         append_audit(task, "plan_created", {"plan": plan})
+        if should_execute_local(self.settings, request):
+            return await self.run_local_workspace(db, task, request, plan)
 
         try:
             task.status = "coding"
@@ -92,6 +113,68 @@ class DeveloperAgent:
             append_audit(task, "failed", {"error": str(exc)})
             db.commit()
             return {"status": "failed", "task_id": str(task.id), "message": str(exc)}
+
+    async def run_local_workspace(self, db: Session, task: DeveloperTask, request: DeveloperAgentInput, plan: list[str]) -> dict:
+        original_engine = self.settings.developer_coding_engine
+        if request.engine:
+            self.settings.developer_coding_engine = request.engine
+        try:
+            task.status = "coding"
+            default_branch = await self.github.get_default_branch(request.repo)
+            workspace_path = self.workspace.clone_repo(request.repo, str(task.id))
+            append_audit(task, "workspace_created", {"path": str(workspace_path)})
+            self.workspace.checkout_default_branch(workspace_path, default_branch)
+            self.workspace.create_branch(workspace_path, task.branch, default_branch)
+            repo_summary = self.workspace.build_repo_summary(workspace_path, default_branch, task.branch)
+            append_audit(task, "repo_context_built", {"project_type": repo_summary.project_type, "files": repo_summary.tree[:40]})
+            try:
+                coding_result = self.coding_executor.execute(request.task_text, repo_summary, company_context="")
+            except CodingExecutorError as exc:
+                append_audit(task, "coding_failed", {"error": str(exc), "debug": exc.debug_log})
+                raise
+            append_audit(
+                task,
+                "coding_completed",
+                {"changed_files": coding_result.changed_files, "summary": coding_result.summary, "debug": coding_result.debug_log},
+            )
+            changed = self.workspace.enforce_diff_safety(workspace_path, default_branch)
+            if not changed:
+                raise RuntimeError("Coding executor produced no repository changes.")
+            git_debug = collect_git_debug(self.workspace, workspace_path)
+            append_audit(task, "diff_inspected", git_debug)
+            try:
+                validation_result = validate_developer_diff(request.task_text, changed, self.settings, diff_text=git_debug["diff"])
+            except Exception as exc:
+                append_audit(task, "validation_failed", {"reason": str(exc), **git_debug})
+                raise
+            append_audit(task, "validation_passed", {"metrics": validation_result.__dict__})
+            task.status = "tests_running"
+            test_result = self.test_runner.run(workspace_path)
+            append_audit(task, "tests_completed", {"summary": test_result.summary_text(), "passed": test_result.passed})
+            commit_message = f"Implement {task_public_id(task)}"
+            self.workspace.commit_all(workspace_path, commit_message)
+            self.workspace.push_branch(workspace_path, task.branch)
+            pr = await self.github.create_draft_pr(
+                request.repo,
+                task.branch,
+                title=pr_title(request.task_text),
+                body=local_pr_body(task, request, coding_result.summary, changed, test_result, validation_result),
+                base_branch=default_branch,
+            )
+            task.pr_url = pr.get("html_url") or pr.get("url")
+            task.status = "tests_failed" if test_result.ran and not test_result.passed else "pr_created"
+            task.summary = local_summary(coding_result.summary, changed, test_result, validation_result)
+            append_audit(task, "draft_pr_created", {"pr_url": task.pr_url, "status": task.status})
+            db.commit()
+            return format_local_pr_response(task, changed, test_result, validation_result)
+        except Exception as exc:
+            task.status = "failed"
+            task.error = str(exc)
+            append_audit(task, "failed", {"error": str(exc)})
+            db.commit()
+            return {"status": "failed", "task_id": str(task.id), "message": str(exc)}
+        finally:
+            self.settings.developer_coding_engine = original_engine
 
     def create_task(self, db: Session, request: DeveloperAgentInput, status: str, error: str | None = None) -> DeveloperTask:
         task = DeveloperTask(
@@ -143,7 +226,7 @@ def detect_ambiguity(task_text: str) -> list[str]:
             "What exact behavior should change?",
             "Which files, endpoint, or user flow should be affected?",
         ]
-    action_words = {"add", "fix", "update", "remove", "create", "implement", "rename", "document"}
+    action_words = {"add", "fix", "update", "remove", "create", "implement", "rename", "document", "build", "complete", "rebuild", "redesign"}
     has_action = any(lowered.startswith(word + " ") or f" {word} " in lowered for word in action_words)
     has_target = len(normalized.split()) >= 4
     if not has_action or not has_target:
@@ -152,6 +235,26 @@ def detect_ambiguity(task_text: str) -> list[str]:
             "What acceptance check should pass after the change?",
         ]
     return []
+
+
+def detect_dangerous_developer_intent(task_text: str) -> str | None:
+    lowered = " ".join(task_text.lower().split())
+    dangerous_phrases = {
+        "merge to main": "Direct merge to main is forbidden.",
+        "merge into main": "Direct merge to main is forbidden.",
+        "merge the pr": "Merging pull requests is forbidden.",
+        "auto merge": "Auto-merge is forbidden.",
+        "deploy production": "Production deployment is forbidden.",
+        "deploy to production": "Production deployment is forbidden.",
+        "production deploy": "Production deployment is forbidden.",
+        "release to production": "Production deployment is forbidden.",
+        "publish package": "Package publishing/release changes are forbidden unless explicitly reviewed outside the MVP.",
+        "npm publish": "Package publishing/release changes are forbidden unless explicitly reviewed outside the MVP.",
+    }
+    for phrase, reason in dangerous_phrases.items():
+        if phrase in lowered:
+            return reason
+    return None
 
 
 def branch_name(task_text: str, task_id: str) -> str:
@@ -172,6 +275,70 @@ def implementation_plan(task_text: str) -> list[str]:
         "Run relevant tests when available or explain why tests were not run.",
         "Open a draft PR for human review. No merge or deployment.",
     ]
+
+
+def should_execute_local(settings: Settings, request: DeveloperAgentInput) -> bool:
+    return request.execute_local or settings.developer_agent_mode == "local_workspace"
+
+
+def collect_git_debug(workspace: LocalWorkspaceService, workspace_path) -> dict:
+    return {
+        "workspace_path": str(workspace_path),
+        "git_status": workspace.git_status(workspace_path),
+        "git_diff_stat": workspace.diff_stat(workspace_path),
+        "git_diff_numstat": workspace.diff_numstat(workspace_path),
+        "diff": workspace.diff_text(workspace_path),
+    }
+
+
+def validate_meaningful_code_changes(task_text: str, changed_files: list[ChangedFile]) -> None:
+    validate_developer_diff(task_text, changed_files)
+
+
+def is_readme_path(path: str) -> bool:
+    return path.lower().rsplit("/", 1)[-1] in {"readme.md", "readme"}
+
+
+def is_documentation_only_path(path: str) -> bool:
+    lower = path.lower()
+    return is_readme_path(lower) or lower.startswith(".zargar/") or lower.startswith("docs/")
+
+
+def is_frontend_or_app_task(lower_task_text: str) -> bool:
+    terms = {
+        "ui",
+        "frontend",
+        "front-end",
+        "react",
+        "vite",
+        "next",
+        "homepage",
+        "home page",
+        "navigation",
+        "blog",
+        "layout",
+        "profile section",
+        "article",
+        "css",
+        "scss",
+        "app.jsx",
+        "index.scss",
+    }
+    return any(term in lower_task_text for term in terms)
+
+
+def frontend_required_prefix(lower_task_text: str) -> str | None:
+    if "blog-front/" in lower_task_text or "blog-front/src/" in lower_task_text:
+        return "blog-front/src/"
+    return None
+
+
+def is_app_source_path(path: str) -> bool:
+    lower = path.lower()
+    if lower.endswith((".jsx", ".tsx", ".js", ".ts", ".css", ".scss", ".html")):
+        source_prefixes = ("src/", "app/", "pages/", "components/", "public/", "blog-front/src/")
+        return lower.startswith(source_prefixes) or lower == "index.html"
+    return False
 
 
 def task_public_id(task: DeveloperTask) -> str:
@@ -220,6 +387,49 @@ def pr_body(task: DeveloperTask, request: DeveloperAgentInput, plan: list[str]) 
     )
 
 
+def local_pr_body(
+    task: DeveloperTask,
+    request: DeveloperAgentInput,
+    summary: str,
+    changed_files,
+    test_result: TestRunSummary,
+    validation_result: DeveloperValidationResult,
+) -> str:
+    files = "\n".join(f"- {item.path} (+{item.added}/-{item.deleted})" for item in changed_files)
+    source_files = "\n".join(f"- {path}" for path in validation_result.source_files) or "- None"
+    return (
+        f"Task: {task_public_id(task)}\n\n"
+        f"Requested from Telegram user `{request.requester_id}`.\n\n"
+        "## Summary\n\n"
+        f"- {summary}\n\n"
+        "## Changed Files\n\n"
+        f"{files}\n\n"
+        "## Changed Source Files\n\n"
+        f"{source_files}\n\n"
+        "## Source Depth Validation\n\n"
+        f"{validation_markdown(validation_result)}\n\n"
+        "## Tests / Build\n\n"
+        f"{test_result.summary_text()}\n\n"
+        "## Known Limitations / Human Review\n\n"
+        "- Draft PR requires human review before merge.\n"
+        "- Verify product fit, visual quality, and any environment-specific build behavior manually.\n\n"
+        "## Safety Evidence\n\n"
+        "- Branch uses `zargar/*` namespace.\n"
+        "- Draft PR created by default.\n"
+        "- Diff inspected before commit and push.\n"
+        "- No merge, approval, deploy, force push, secrets, or branch protection changes performed.\n"
+    )
+
+
+def local_summary(summary: str, changed_files, test_result: TestRunSummary, validation_result: DeveloperValidationResult) -> str:
+    return (
+        f"{summary}\n"
+        f"Changed files: {', '.join(item.path for item in changed_files)}\n"
+        f"Validation: {validation_result.validation_summary}\n"
+        f"Tests/build: {test_result.summary_text()}"
+    )
+
+
 def append_audit(task: DeveloperTask, action: str, details: dict) -> None:
     audit = list(task.audit_log or [])
     audit.append({"at": datetime.now(timezone.utc).isoformat(), "action": action, "details": details})
@@ -263,5 +473,26 @@ def format_pr_created_response(task: DeveloperTask, plan: list[str]) -> dict:
             "- Created a draft PR for review.\n"
             "- Human review required.\n\n"
             "No merge performed."
+        ),
+    }
+
+
+def format_local_pr_response(task: DeveloperTask, changed_files, test_result: TestRunSummary, validation_result: DeveloperValidationResult | None = None) -> dict:
+    files = "\n".join(f"- {item.path}" for item in changed_files)
+    validation = validation_result.validation_summary if validation_result else "Validation passed."
+    return {
+        "status": task.status,
+        "task_id": str(task.id),
+        "message": (
+            f"Draft PR Created\n\n"
+            f"Task: {task_public_id(task)}\n\n"
+            f"Repository:\n{task.repo}\n\n"
+            f"Branch:\n{task.branch}\n\n"
+            f"Changed files:\n{files}\n\n"
+            f"Validation:\n{validation}\n\n"
+            f"Tests/build:\n{test_result.summary_text()}\n\n"
+            f"PR URL: {task.pr_url}\n\n"
+            "Human review required.\n\n"
+            "No merge or deploy performed."
         ),
     }

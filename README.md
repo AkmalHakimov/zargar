@@ -134,6 +134,28 @@ Configure GitHub access:
 ```bash
 export GITHUB_TOKEN="ghp_..."
 export GITHUB_ALLOWED_REPOS="owner/repo,owner2/repo2"
+export GITHUB_DRAFT_PRS_ONLY=true
+export GITHUB_MAX_FILES_CHANGED=5
+export GITHUB_MAX_LINES_CHANGED=300
+export GITHUB_MAX_NEW_FILES=3
+```
+
+Execution modes:
+
+```bash
+export DEVELOPER_AGENT_MODE=plan_only          # v0.8 behavior
+export DEVELOPER_AGENT_MODE=local_workspace    # v0.9 real local edits
+export DEVELOPER_CODING_ENGINE=deterministic   # default safe MVP engine
+export DEVELOPER_CODING_ENGINE=codex_cli       # optional, requires Codex CLI
+export CODEX_CLI_PATH=codex
+export DEVELOPER_COMPLEX_MIN_SOURCE_FILES=2
+export DEVELOPER_COMPLEX_MIN_SOURCE_LINES=20
+export DEVELOPER_FRONTEND_COMPLEX_MIN_SOURCE_FILES=2
+export DEVELOPER_MULTIPAGE_MIN_RELEVANT_SOURCE_FILES=2
+export MAX_CHANGED_FILES_FOR_MVP=30
+export MAX_CHANGED_SOURCE_LINES_FOR_MVP=2500
+export MAX_ALLOWED_DIRECTORIES_FOR_MVP=8
+export ALLOW_COMPLEX_REPO_TASKS=true
 ```
 
 Safety model:
@@ -144,7 +166,11 @@ Safety model:
 - No merge, deploy, force push, self-approval, branch-protection bypass, secret edits, or repository administration is supported.
 - Forbidden paths include `.env`, `.env.*`, `secrets.*`, `credentials*`, `*private_key*`, `*secret_key*`, `*.pem`.
 - CI/CD, infrastructure, deployment, and Terraform paths are blocked by default.
-- MVP change limits default to `MAX_FILES_CHANGED=5`, `MAX_LINES_CHANGED=300`, `MAX_NEW_FILES=3`.
+- Plan-only GitHub contents limits default to `GITHUB_MAX_FILES_CHANGED=5`, `GITHUB_MAX_LINES_CHANGED=300`, `GITHUB_MAX_NEW_FILES=3`.
+- Local workspace coding budgets default to `MAX_CHANGED_FILES_FOR_MVP=30`, `MAX_CHANGED_SOURCE_LINES_FOR_MVP=2500`, `MAX_ALLOWED_DIRECTORIES_FOR_MVP=8`, `ALLOW_COMPLEX_REPO_TASKS=true`.
+- Implementation tasks must pass source-depth validation before commit, push, or PR creation. README/docs/.zargar-only changes are rejected for implementation tasks.
+- Complex app/frontend/backend tasks require meaningful source changes, with defaults of `DEVELOPER_COMPLEX_MIN_SOURCE_FILES=2` and `DEVELOPER_COMPLEX_MIN_SOURCE_LINES=20`.
+- Complex frontend or multi-page tasks require relevant app source files such as `src/`, `app/`, `pages/`, `components/`, `blog-front/src/`, or `packages/*/src`.
 
 Branch lifecycle:
 
@@ -167,12 +193,17 @@ CLI commands:
 
 ```bash
 zargar dev-task --company-id <id> --repo owner/repo --task "Add README setup section"
+zargar dev-task --company-id <id> --repo owner/repo --task "Add homepage and blog layout" --execute-local
+zargar dev-task --company-id <id> --repo owner/repo --task "Add homepage and blog layout" --execute-local --engine codex_cli
 zargar dev-status --task-id <task_id>
 ```
 
 Limitations:
 
-- The MVP creates a safe draft PR with an auditable developer task file and implementation plan.
+- `plan_only` mode creates a safe draft PR with an auditable developer task file and implementation plan.
+- `local_workspace` mode clones the allowlisted repo into `/tmp/zargar-workspaces/<task_id>`, creates a `zargar/*` branch, applies safe code changes, runs detected safe tests/build commands, pushes the branch, and opens a draft PR.
+- The deterministic local executor supports README edits, static HTML/CSS sites, and simple React/Vite/Next homepage/blog/about scaffolding.
+- `codex_cli` mode runs Codex CLI in the cloned workspace with a bounded prompt, then inspects the diff and blocks unsafe or oversized changes before commit/push.
 - Ambiguous tasks such as `Improve auth` or `Refactor backend` are rejected with clarification questions.
 - Human review remains required for every PR.
 

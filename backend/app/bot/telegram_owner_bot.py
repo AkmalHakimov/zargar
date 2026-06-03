@@ -223,6 +223,7 @@ class TelegramOwnerBot:
             requester_id=str(user_id),
             telegram_chat_id=chat_id,
             telegram_message_id=message_id,
+            execute_local=False,
         )
         with self.db_session_factory() as db:
             result = await self.developer_agent.run(db, request)

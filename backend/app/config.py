@@ -19,11 +19,26 @@ class Settings(BaseSettings):
     telegram_allowed_user_ids: str = ""
     telegram_allowed_chat_ids: str = ""
     github_token: str | None = None
-    github_allowed_repos: str = ""
+    github_allowed_repos: str | None = None
+    github_draft_prs_only: bool = True
+    github_max_files_changed: int = 5
+    github_max_lines_changed: int = 300
+    github_max_new_files: int = 3
     max_files_changed: int = 5
     max_lines_changed: int = 300
     max_new_files: int = 3
     branch_retention_days: int = 7
+    developer_agent_mode: str = "plan_only"
+    developer_coding_engine: str = "deterministic"
+    codex_cli_path: str = "codex"
+    developer_complex_min_source_files: int = 2
+    developer_complex_min_source_lines: int = 20
+    developer_frontend_complex_min_source_files: int = 2
+    developer_multipage_min_relevant_source_files: int = 2
+    max_changed_files_for_mvp: int = 30
+    max_changed_source_lines_for_mvp: int = 2500
+    max_allowed_directories_for_mvp: int = 8
+    allow_complex_repo_tasks: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

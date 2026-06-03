@@ -17,11 +17,36 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def is_postgresql() -> bool:
+    return op.get_bind().dialect.name == "postgresql"
+
+
+def uuid_type():
+    if is_postgresql():
+        return postgresql.UUID(as_uuid=True)
+    return sa.String(length=36)
+
+
+def json_type():
+    if is_postgresql():
+        return postgresql.JSONB
+    return sa.JSON
+
+
+def table_exists(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def create_table_once(name: str, *columns, **kwargs) -> None:
+    if not table_exists(name):
+        op.create_table(name, *columns, **kwargs)
+
+
 def upgrade() -> None:
-    op.create_table(
+    create_table_once(
         "developer_tasks",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("company_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("companies.id", ondelete="CASCADE"), index=True),
+        sa.Column("id", uuid_type(), primary_key=True),
+        sa.Column("company_id", uuid_type(), sa.ForeignKey("companies.id", ondelete="CASCADE"), index=True),
         sa.Column("repo", sa.String(length=255), nullable=False, index=True),
         sa.Column("branch", sa.String(length=255), index=True),
         sa.Column("status", sa.String(length=64), server_default="pending", index=True),
@@ -32,7 +57,7 @@ def upgrade() -> None:
         sa.Column("pr_url", sa.Text),
         sa.Column("summary", sa.Text),
         sa.Column("error", sa.Text),
-        sa.Column("audit_log", postgresql.JSONB, server_default="[]"),
+        sa.Column("audit_log", json_type(), server_default="[]"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )

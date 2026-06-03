@@ -7,3 +7,4 @@ dist/
 build/
 *.egg-info/
 backend/zargar_demo.db
+.DS_Store

@@ -123,9 +123,22 @@ def process_new(company_id: UUID = typer.Option(...), limit: int = typer.Option(
 
 
 @app.command("dev-task")
-def dev_task(company_id: UUID = typer.Option(...), repo: str = typer.Option(...), task: str = typer.Option(...)) -> None:
+def dev_task(
+    company_id: UUID = typer.Option(...),
+    repo: str = typer.Option(...),
+    task: str = typer.Option(...),
+    execute_local: bool = typer.Option(False),
+    engine: str | None = typer.Option(None),
+) -> None:
     ensure_schema()
-    request = DeveloperAgentInput(company_id=company_id, repo=repo, task_text=task, requester_id="cli")
+    request = DeveloperAgentInput(
+        company_id=company_id,
+        repo=repo,
+        task_text=task,
+        requester_id="cli",
+        execute_local=execute_local,
+        engine=engine,
+    )
     with SessionLocal() as db:
         result = asyncio.run(DeveloperAgent().run(db, request))
         typer.echo(result["message"])
